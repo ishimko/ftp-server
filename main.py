@@ -5,7 +5,7 @@ if __name__ == '__main__':
     ftpServer.daemon = True
     ftpServer.start()
     try:
-        input('\t\tpress Ctrl+C to stop\n')
+        input('**press Ctrl+C to stop**\n')
     except KeyboardInterrupt:
         ftpServer.stop()
         print('server stopped')
