@@ -191,7 +191,7 @@ class FTPThreadHandler(Thread):
                 file_content = f.read()
             else:
                 f = open(filename, 'r')
-                file_content = f.read().encode('utf-8')
+                file_content = f.read().encode('ascii')
         except IOError:
             self.send_answer(450)
             return
