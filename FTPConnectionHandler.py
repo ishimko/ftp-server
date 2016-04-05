@@ -16,14 +16,16 @@ class FTPThreadHandler(Thread):
         500: 'Syntax error, command unrecognized.',
         221: 'Service closing control connection.',
         502: 'Command not implemented.',
-        227: 'Entering passive mode ',
+        227: 'Entering passive mode',
         150: 'About to open data connection.',
         226: 'Closing data connection.',
         215: '',
         450: 'Requested file action not taken.',
         250: 'Requested file action okay, completed.',
         257: '',
-        213: ''
+        213: '',
+        220: 'Welcome!',
+
     }
 
     def __init__(self, connection, root_dir, users):
@@ -53,14 +55,15 @@ class FTPThreadHandler(Thread):
         log('{a[0]}:{a[1]} connected'.format(a=self.address))
         command_text = None
 
-        self.client_socket.send(b'220 Welcome!\r\n')
+        self.send_answer(220)
         while not self.is_closed:
             try:
                 command_text = self.client_socket.recv(FTPThreadHandler.BUFFER_SIZE)
                 if command_text:
-                    log('received: {}'.format(FTPThreadHandler.get_readable_command(command_text)))
+                    readable_command = FTPThreadHandler.get_readable_command(command_text)
+                    log('received: {}'.format(readable_command))
                     command_handler = getattr(self, FTPThreadHandler.get_command_name(command_text))
-                    command_handler(command_text[4:-2].strip().decode('ascii'))
+                    command_handler(readable_command[4:].strip())
             except ConnectionAbortedError:
                 log('connection aborted')
                 return
@@ -138,7 +141,7 @@ class FTPThreadHandler(Thread):
         self.passive_connection.listen(1)
         ip, port = self.passive_connection.getsockname()
         log('ready for connect on {}:{}'.format(ip, port))
-        self.send_answer('({})'.format(FTPThreadHandler.get_address_str(ip, port)))
+        self.send_answer(227, '({})'.format(FTPThreadHandler.get_address_str(ip, port)))
 
     @staticmethod
     def get_address_str(ip, port):
