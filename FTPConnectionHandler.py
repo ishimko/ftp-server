@@ -18,7 +18,12 @@ class FTPThreadHandler(Thread):
         502: 'Command not implemented.',
         227: 'Entering passive mode ',
         150: 'About to open data connection.',
-        226: 'Closing data connection.'
+        226: 'Closing data connection.',
+        215: '',
+        450: 'Requested file action not taken.',
+        250: 'Requested file action okay, completed.',
+        257: '',
+        213: ''
     }
 
     def __init__(self, connection, root_dir, users):
@@ -34,6 +39,7 @@ class FTPThreadHandler(Thread):
         self.active_ip = None
         self.active_port = None
         self.lock = Lock()
+        self.mode = 'I'
 
     @staticmethod
     def get_command_name(command_text):
@@ -41,7 +47,7 @@ class FTPThreadHandler(Thread):
 
     @staticmethod
     def get_readable_command(command_text):
-        return command_text[:len(command_text) - 1].decode('ascii')
+        return command_text[:-2].decode('ascii')
 
     def run(self):
         log('{a[0]}:{a[1]} connected'.format(a=self.address))
@@ -54,14 +60,14 @@ class FTPThreadHandler(Thread):
                 if command_text:
                     log('received: {}'.format(FTPThreadHandler.get_readable_command(command_text)))
                     command_handler = getattr(self, FTPThreadHandler.get_command_name(command_text))
-                    command_handler(command_text)
+                    command_handler(command_text[4:-2].strip().decode('ascii'))
             except ConnectionAbortedError:
                 log('connection aborted')
                 return
             except ConnectionError as e:
                 log('error: connection error: {}'.format(e))
             except AttributeError:
-                log('error: unknown command: {}'.format(command_text))
+                log('error: unknown command: {}'.format(FTPThreadHandler.get_command_name(command_text)))
                 self.send_answer(500)
 
     def send_answer(self, code, msg=''):
@@ -71,7 +77,7 @@ class FTPThreadHandler(Thread):
         self.lock.release()
 
     def USER(self, command_text):
-        username = (command_text.split()[1]).decode('ascii')
+        username = command_text
         log_message = 'username {}'.format(username)
         if username in self.users:
             self.username = username
@@ -82,13 +88,14 @@ class FTPThreadHandler(Thread):
             self.send_answer(530)
 
     def PASS(self, command_text):
-        password = (command_text.split()[1]).decode('ascii')
+        password = command_text
         log_message = 'user: {}, password: {}'.format(self.username, password)
         if self.users.get(self.username) == password:
             log(log_message + ': access granted')
             self.send_answer(230)
         else:
             log(log_message + ': access denied')
+            self.username = ''
             self.send_answer(530)
 
     def QUIT(self, _):
@@ -101,18 +108,31 @@ class FTPThreadHandler(Thread):
         self.send_answer(200)
 
     def SYST(self, _):
+        if not self.username:
+            self.send_answer(530)
+            return
+        log('sending system type')
         self.send_answer(215, 'UNIX Type: L8')
 
     def PORT(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
         if self.passive_connection:
             self.passive_connection.close()
             self.passive_connection = None
-        received_bytes = command_text[5:].split(b',')
-        self.active_ip = b'.'.join(received_bytes[:4])
-        self.active_port = (int(received_bytes[4]) << 8) + int(received_bytes[5])
+        received_bytes = command_text.split(',')
+        self.active_ip = ('.'.join(received_bytes[:4])).encode('ascii')
+        self.active_port = (int(received_bytes[4]) << 8) | int(received_bytes[5])
+        log('client info for active connection: {}:{}'.format(self.active_ip, self.active_port))
         self.send_answer(200)
 
     def PASV(self, _):
+        if not self.username:
+            self.send_answer(530)
+            return
+
         self.passive_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
         self.passive_connection.bind(('', 0))
         self.passive_connection.listen(1)
@@ -126,6 +146,10 @@ class FTPThreadHandler(Thread):
         return '{},{port[0]},{port[1]}'.format(','.join(ip.split('.')), port=port_str)
 
     def LIST(self, _):
+        if not self.username:
+            self.send_answer(530)
+            return
+
         self.send_answer(150)
         log('sending list of {}'.format(self.current_dir))
         dir_listing = self.get_dir_listing()
@@ -135,20 +159,214 @@ class FTPThreadHandler(Thread):
             self.data_connection = DataConnection((self.active_ip, self.active_port), self.send_answer)
         self.data_connection.set_data(dir_listing)
         self.data_connection.init_data_socket()
-        self.data_connection.daemon = True
         self.data_connection.start()
 
     def ABOR(self, _):
         if not self.data_connection.is_aborted():
             self.data_connection.stop()
 
+    def TYPE(self, mode):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        self.mode = mode
+        if self.mode == 'I':
+            log('switching to binary mode')
+        else:
+            log('switching to text mode')
+        self.send_answer(200)
+
+    def RETR(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        filename = os.path.join(self.current_dir, command_text)
+        log('downloading ' + filename)
+
+        try:
+            if self.mode == 'I':
+                f = open(filename, 'rb')
+                file_content = f.read()
+            else:
+                f = open(filename, 'r')
+                file_content = f.read().encode('utf-8')
+        except IOError:
+            self.send_answer(450)
+            return
+
+        self.send_answer(150)
+        if self.passive_connection:
+            self.data_connection = DataConnection(self.passive_connection, self.send_answer)
+        else:
+            self.data_connection = DataConnection((self.active_ip, self.active_port), self.send_answer)
+        self.data_connection.set_data(file_content)
+        self.data_connection.init_data_socket()
+        self.data_connection.start()
+
+    def STOR(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        filename = os.path.join(self.current_dir, command_text)
+        log('uploading ' + filename)
+
+        try:
+            if self.mode == 'I':
+                f = open(filename, 'wb')
+            else:
+                f = open(filename, 'w')
+        except IOError:
+            self.send_answer(450)
+            return
+
+        self.send_answer(150)
+        if self.passive_connection:
+            self.data_connection = DataConnection(self.passive_connection, self.send_answer, False)
+        else:
+            self.data_connection = DataConnection((self.active_ip, self.active_port), self.send_answer, False)
+        self.data_connection.init_data_socket()
+        self.data_connection.set_out_file(f)
+        self.data_connection.start()
+
+    def REIN(self, _):
+        log('reinitialization')
+        if self.data_connection:
+            self.data_connection.stop()
+        if self.passive_connection:
+            self.passive_connection.close()
+            self.passive_connection = None
+        self.username = ''
+        self.mode = 'I'
+        self.current_dir = self.root_dir
+
+    def DELE(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        filename = os.path.join(self.current_dir, command_text)
+        log_message = '{}: '.format(filename)
+        try:
+            os.remove(filename)
+            self.send_answer(250)
+            log(log_message + 'removed')
+        except IOError:
+            self.send_answer(450)
+            log(log_message + 'removing failed')
+
+    def MKD(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        dirname = os.path.join(self.current_dir, command_text)
+        log_message = '{}: '.format(dirname)
+        try:
+            os.mkdir(dirname, mode=0o777)
+            self.send_answer(257, dirname)
+            log(log_message + 'created')
+        except IOError:
+            self.send_answer(450)
+            log(log_message + 'creating failed')
+
+    def RMD(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        dirname = os.path.join(self.current_dir, command_text)
+        log_message = 'dir {}: '.format(dirname)
+        try:
+            os.rmdir(dirname)
+            self.send_answer(250)
+            log(log_message + 'removed')
+        except IOError:
+            log(log_message + 'removing failed')
+            self.send_answer(450)
+
+    def CDUP(self, _):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        if not os.path.samefile(self.current_dir, self.root_dir):
+            self.current_dir = os.path.abspath(os.path.join(self.current_dir, '..'))
+        log('new working directory: {}'.format(self.current_dir))
+        self.send_answer(200)
+
+    def PWD(self, _):
+        if not self.username:
+            self.send_answer(530)
+            return
+        log('sending current directory')
+        working_dir = os.path.relpath(self.current_dir, self.root_dir)
+        if working_dir == '.':
+            working_dir = '/'
+        else:
+            working_dir = '/' + working_dir
+        self.send_answer(257, '"{}"'.format(working_dir))
+
+    def CWD(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        dirname = command_text
+        if dirname == '/':
+            self.current_dir = self.root_dir
+        elif dirname[0] == '/':
+            self.current_dir = os.path.join(self.root_dir, dirname[1:])
+        else:
+            new_path = os.path.abspath(os.path.join(self.current_dir, dirname))
+            if os.path.abspath(self.root_dir) in os.path.abspath(new_path):
+                self.current_dir = new_path
+            else:
+                self.current_dir = self.root_dir
+        log('new working directory: {}'.format(self.current_dir))
+        self.send_answer(250)
+
+    def SIZE(self, command_text):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        filename = command_text
+        try:
+            size = os.path.getsize(filename)
+            msg = str(size)
+            self.send_answer(213, msg)
+        except IOError:
+            self.send_answer(450)
+
+    def NLIST(self, _):
+        if not self.username:
+            self.send_answer(530)
+            return
+
+        self.send_answer(150)
+        log('sending short list of {}'.format(self.current_dir))
+        dir_listing = self.get_dir_listing(short=True)
+        if self.passive_connection:
+            self.data_connection = DataConnection(self.passive_connection, self.send_answer)
+        else:
+            self.data_connection = DataConnection((self.active_ip, self.active_port), self.send_answer)
+        self.data_connection.set_data(dir_listing)
+        self.data_connection.init_data_socket()
+        self.data_connection.start()
+
     def close(self):
         self.is_closed = True
 
-    def get_dir_listing(self):
+    def get_dir_listing(self, short=False):
         result = b''
         for dir_entry in os.listdir(self.current_dir):
-            list_entry = FTPThreadHandler.get_list_entry(dir_entry)
+            if short:
+                list_entry = dir_entry.encode('ascii')
+            else:
+                list_entry = FTPThreadHandler.get_list_entry(os.path.join(self.current_dir, dir_entry))
             result += list_entry + b'\r\n'
         return result
 

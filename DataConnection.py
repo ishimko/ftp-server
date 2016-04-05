@@ -4,7 +4,9 @@ from logger import log
 
 
 class DataConnection(Thread):
-    def __init__(self, connection, send_answer):
+    BUFFER_SIZE = 1024
+    def __init__(self, connection, send_answer, send_mode=True):
+        Thread.__init__(self)
         if isinstance(connection, tuple):
             self.passive_mode = False
             self.client = connection
@@ -16,10 +18,15 @@ class DataConnection(Thread):
         self.data_socket = None
         self.lock = Lock()
         self.send_answer = send_answer
-        Thread.__init__(self)
+        self.daemon = True
+        self.send_mode = send_mode
+        self.out_file = None
 
     def set_data(self, data):
         self.data = data
+
+    def set_out_file(self, out_file):
+        self.out_file = out_file
 
     def is_aborted(self):
         self.lock.acquire()
@@ -41,18 +48,27 @@ class DataConnection(Thread):
             self.data_socket.connect(self.client)
 
     def run(self):
-        log('sending to {a[0]}:{a[1]}'.format(a=self.client))
-        sent_data_size = 0
-        block_number = 1
-        while (not self.is_aborted()) and (sent_data_size < len(self.data)):
-            block_to_send = self.data[(block_number - 1) * 100: block_number * 100]
-            block_number += 1
-            sent_data_size += len(block_to_send)
-            self.data_socket.send(block_to_send)
-
+        if self.send_mode:
+            log('sending to {a[0]}:{a[1]}'.format(a=self.client))
+            sent_data_size = 0
+            block_number = 1
+            while (not self.is_aborted()) and (sent_data_size < len(self.data)):
+                block_to_send = self.data[(block_number - 1) * 100: block_number * 100]
+                block_number += 1
+                sent_data_size += len(block_to_send)
+                self.data_socket.send(block_to_send)
+            log('sending to {a[0]}:{a[1]} complete'.format(a=self.client))
+        else:
+            log('receiving from {a[0]}:{a[1]}'.format(a=self.client))
+            while True:
+                data = self.data_socket.recv(DataConnection.BUFFER_SIZE)
+                if not data:
+                    break
+                self.out_file.write(data)
+            self.out_file.close()
+            log('receiving from {a[0]}:{a[1]} complete'.format(a=self.client))
         self.stop()
 
-        log('sending to {a[0]}:{a[1]} complete'.format(a=self.client))
 
     def stop(self):
         self.abort()
