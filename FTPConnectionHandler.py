@@ -4,10 +4,12 @@ from DataConnection import DataConnection
 import os
 import time
 import socket
+from pwd import getpwuid
 
 
 class FTPThreadHandler(Thread):
     BUFFER_SIZE = 4110
+    IP_FOR_PASSIVE = '127.0.0.1'
     ANSWERS = {
         331: 'Need account for login.',
         530: 'Not logged in.',
@@ -49,7 +51,7 @@ class FTPThreadHandler(Thread):
 
     @staticmethod
     def get_readable_command(command_text):
-        return command_text[:-2].decode('ascii')
+        return command_text[:-2].decode('utf-8')
 
     def run(self):
         log('{a[0]}:{a[1]} connected'.format(a=self.address))
@@ -137,7 +139,7 @@ class FTPThreadHandler(Thread):
             return
 
         self.passive_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
-        self.passive_connection.bind(('', 0))
+        self.passive_connection.bind((FTPThreadHandler.IP_FOR_PASSIVE, 0))
         self.passive_connection.listen(1)
         ip, port = self.passive_connection.getsockname()
         log('ready for connect on {}:{}'.format(ip, port))
@@ -245,27 +247,33 @@ class FTPThreadHandler(Thread):
         self.mode = 'I'
         self.current_dir = self.root_dir
 
+    @staticmethod
+    def safe_path_join(root, path):
+        return os.path.join(root, path if not path[0] == '/' else path[1:])
+
     def DELE(self, command_text):
         if not self.username:
             self.send_answer(530)
             return
 
-        filename = os.path.join(self.current_dir, command_text)
+        filename = FTPThreadHandler.safe_path_join(self.root_dir, command_text)
+
         log_message = '{}: '.format(filename)
         try:
             os.remove(filename)
             self.send_answer(250)
             log(log_message + 'removed')
-        except IOError:
+        except IOError as e:
             self.send_answer(450)
             log(log_message + 'removing failed')
+            print(e)
 
     def MKD(self, command_text):
         if not self.username:
             self.send_answer(530)
             return
 
-        dirname = os.path.join(self.current_dir, command_text)
+        dirname = FTPThreadHandler.safe_path_join(self.current_dir, command_text)
         log_message = '{}: '.format(dirname)
         try:
             os.mkdir(dirname, mode=0o777)
@@ -279,8 +287,10 @@ class FTPThreadHandler(Thread):
         if not self.username:
             self.send_answer(530)
             return
-
-        dirname = os.path.join(self.current_dir, command_text)
+        if command_text[0] == '/':
+            dirname = FTPThreadHandler.safe_path_join(self.root_dir, command_text)
+        else:
+            dirname = FTPThreadHandler.safe_path_join(self.current_dir, command_text)
         log_message = 'dir {}: '.format(dirname)
         try:
             os.rmdir(dirname)
@@ -319,17 +329,20 @@ class FTPThreadHandler(Thread):
 
         dirname = command_text
         if dirname == '/':
-            self.current_dir = self.root_dir
+            new_path = self.root_dir
         elif dirname[0] == '/':
-            self.current_dir = os.path.join(self.root_dir, dirname[1:])
+            new_path = os.path.join(self.root_dir, dirname[1:])
         else:
             new_path = os.path.abspath(os.path.join(self.current_dir, dirname))
-            if os.path.abspath(self.root_dir) in os.path.abspath(new_path):
-                self.current_dir = new_path
-            else:
+            if not (os.path.abspath(self.root_dir) in os.path.abspath(new_path)):
                 self.current_dir = self.root_dir
-        log('new working directory: {}'.format(self.current_dir))
-        self.send_answer(250)
+        if os.path.isdir(new_path):
+            self.current_dir = new_path
+            log('new working directory: {}'.format(self.current_dir))
+            self.send_answer(250)
+        else:
+            log('not valid path: {}'.format(new_path))
+            self.send_answer(550)
 
     def SIZE(self, command_text):
         if not self.username:
@@ -368,19 +381,31 @@ class FTPThreadHandler(Thread):
         result = b''
         for dir_entry in os.listdir(self.current_dir):
             if short:
-                list_entry = dir_entry.encode('ascii')
+                list_entry = dir_entry
             else:
                 list_entry = FTPThreadHandler.get_list_entry(os.path.join(self.current_dir, dir_entry))
+            list_entry = list_entry.encode('utf-8')
             result += list_entry + b'\r\n'
         return result
+
+    @staticmethod
+    def get_file_owner(stat_info):
+        return getpwuid(stat_info.st_uid).pw_name
+
+    @staticmethod
+    def get_file_group(stat_info):
+        return getpwuid(stat_info.st_gid).pw_name
 
     @staticmethod
     def get_list_entry(dir_entry):
         stat_info = os.stat(dir_entry)
         full_mode = 'rwx' * 3
         mode = ''
+        user = FTPThreadHandler.get_file_owner(stat_info)
+        group = getpwuid(stat_info.st_gid).pw_name
         for i in range(9):
             mode += full_mode[i] if ((stat_info.st_mode >> (8 - i)) & 1) else '-'
         d = 'd' if (os.path.isdir(dir_entry)) else '-'
-        entry_time = time.strftime(' %b %d %H:%M ', time.gmtime(stat_info.st_mtime))
-        return (d + mode + ' ' + str(stat_info.st_size) + entry_time + os.path.basename(dir_entry)).encode('ascii')
+        entry_time = time.strftime('%b %d %H:%M', time.gmtime(stat_info.st_mtime))
+        return ' '.join([d + mode, str(stat_info.st_nlink), user, str(stat_info.st_size), entry_time,
+                         os.path.basename(dir_entry)])
