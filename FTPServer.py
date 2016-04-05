@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 from threading import Thread
 import socket
 import os
@@ -13,6 +12,7 @@ class FTPServer(Thread):
         self.port = port
         self.users = FTPServer.read_users(users_file)
         self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        self.serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.serverSocket.bind((ip, port))
 
     def run(self):
