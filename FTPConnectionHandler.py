@@ -334,6 +334,7 @@ class FTPThreadHandler(Thread):
             return
 
         filename = command_text
+        log('sending size of {}'.format(filename))
         try:
             size = os.path.getsize(filename)
             msg = str(size)
