@@ -197,8 +197,9 @@ class FTPThreadHandler(Thread):
             else:
                 f = open(filename, 'r')
                 file_content = f.read().encode('ascii')
-        except IOError:
+        except IOError as e:
             self.send_answer(450)
+            log('reading {} failed: {}'.format(filename, e))
             return
 
         self.send_answer(150)
@@ -223,8 +224,9 @@ class FTPThreadHandler(Thread):
                 f = open(filename, 'wb')
             else:
                 f = open(filename, 'w')
-        except IOError:
+        except IOError as e:
             self.send_answer(450)
+            log('sending {} failed: {}'.format(filename, e))
             return
 
         self.send_answer(150)
@@ -265,8 +267,7 @@ class FTPThreadHandler(Thread):
             log(log_message + 'removed')
         except IOError as e:
             self.send_answer(450)
-            log(log_message + 'removing failed')
-            print(e)
+            log(log_message + 'removing failed: \n{}'.format(e))
 
     def MKD(self, command_text):
         if not self.username:
@@ -279,9 +280,9 @@ class FTPThreadHandler(Thread):
             os.mkdir(dirname, mode=0o777)
             self.send_answer(257, dirname)
             log(log_message + 'created')
-        except IOError:
+        except IOError as e:
             self.send_answer(450)
-            log(log_message + 'creating failed')
+            log(log_message + 'creating failed: \n{}'.format(e))
 
     def RMD(self, command_text):
         if not self.username:
@@ -296,8 +297,8 @@ class FTPThreadHandler(Thread):
             os.rmdir(dirname)
             self.send_answer(250)
             log(log_message + 'removed')
-        except IOError:
-            log(log_message + 'removing failed')
+        except IOError as e:
+            log(log_message + 'removing failed: \n'.format(e))
             self.send_answer(450)
 
     def CDUP(self, _):
@@ -335,7 +336,7 @@ class FTPThreadHandler(Thread):
         else:
             new_path = os.path.abspath(os.path.join(self.current_dir, dirname))
             if not (os.path.abspath(self.root_dir) in os.path.abspath(new_path)):
-                self.current_dir = self.root_dir
+                new_path = self.root_dir
         if os.path.isdir(new_path):
             self.current_dir = new_path
             log('new working directory: {}'.format(self.current_dir))
@@ -355,8 +356,9 @@ class FTPThreadHandler(Thread):
             size = os.path.getsize(filename)
             msg = str(size)
             self.send_answer(213, msg)
-        except IOError:
+        except IOError as e:
             self.send_answer(450)
+            log('getting size of {} failed:\n{}'.format(filename, e))
 
     def NLIST(self, _):
         if not self.username:

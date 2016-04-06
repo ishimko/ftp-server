@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 from FTPServer import FTPServer
+from logger import log
 
 
 if __name__ == '__main__':
@@ -11,4 +12,4 @@ if __name__ == '__main__':
         input('**press Ctrl+C to stop**\n')
     except KeyboardInterrupt:
         ftpServer.stop()
-        print('server stopped')
+        log('server stopped')
